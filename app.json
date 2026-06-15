@@ -59,9 +59,7 @@
         "resizeMode": "cover",
         "backgroundColor": "#7c3aed"
       },
-      "package": "com.rakshaai.emergency",
-      "minSdkVersion": 26,
-      "usesCleartextTraffic": true
+      "package": "com.rakshaai.emergency"
     },
     "web": {
       "favicon": "./assets/favicon.png"
