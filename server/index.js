@@ -6,6 +6,12 @@ const os = require('os');
 const { initializeApp } = require('firebase/app');
 const { getFirestore, doc, setDoc } = require('firebase/firestore');
 
+// Use Render's dynamic port, fallback to 3001 for local dev
+const PORT = process.env.PORT || 3001;
+
+// Detect if we are running on Render
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL || null;
+
 // --- Firebase Config (Copied from Client) ---
 const firebaseConfig = {
   apiKey: "AIzaSyBzfBhpdOw7bwt_PMykOP0icdGK7wkcaM4",
@@ -203,7 +209,7 @@ setInterval(() => {
   }
 }, 120000);
 
-const PORT = 3001;
+// PORT is now declared at the top of the file (reads from process.env.PORT)
 
 // Helper to get local IP
 function getLocalIp() {
@@ -236,17 +242,21 @@ function getLocalIp() {
   return fallbackIp;
 }
 
-// Function to update Firestore with current IP
+// Function to update Firestore with current server URL
 async function syncIpToFirestore(ip) {
   try {
-    console.log(`[Firestore] Syncing server IP (${ip}) to common config...`);
+    // On Render, use the full public HTTPS URL; locally use http://ip:port
+    const serverUrl = RENDER_URL ? RENDER_URL : `http://${ip}:${PORT}`;
+    console.log(`[Firestore] Syncing server URL (${serverUrl}) to common config...`);
     await setDoc(doc(db, 'admin', 'streaming_config'), {
-      serverIp: ip,
+      serverIp: serverUrl,
+      serverUrl: serverUrl,
       updatedAt: new Date().toISOString(),
       status: 'online',
-      port: PORT
+      port: PORT,
+      isCloud: !!RENDER_URL,
     }, { merge: true });
-    console.log(`[Firestore] Sync Successful! All apps will now connect to: ${ip}:${PORT}`);
+    console.log(`[Firestore] Sync Successful! All apps will now connect to: ${serverUrl}`);
   } catch (error) {
     console.error(`[Firestore] Sync Failed:`, error.message);
     console.log(`[Firestore] Please ensure Firestore rules allow public write to 'admin/streaming_config'`);
@@ -255,15 +265,17 @@ async function syncIpToFirestore(ip) {
 
 server.listen(PORT, '0.0.0.0', () => {
   const localIp = getLocalIp();
-  console.log(`\n=========================================`);
-  console.log(`🚀 RAKSHAAI STREAMING SERVER (AUTO-SYNC)`);
-  console.log(`=========================================`);
-  console.log(`PORT:      ${PORT}`);
-  console.log(`LOCAL IP:  ${localIp}`);
-  console.log(`=========================================`);
+  const displayUrl = RENDER_URL ? RENDER_URL : `http://${localIp}:${PORT}`;
 
-  console.log(`[Action Required for Global Use]: To make this server work across India,`);
-  console.log(`deploy this Node server to Render/Heroku or use Ngrok (e.g. ngrok http 3001).`);
-  console.log(`Then click 'Update IP' in the Admin App and paste the public https:// url!`);
+  console.log(`\n=========================================`);
+  console.log(`🚀 RAKSHAAI STREAMING SERVER (CLOUD-READY)`);
+  console.log(`=========================================`);
+  console.log(`PORT:        ${PORT}`);
+  console.log(`ENVIRONMENT: ${RENDER_URL ? '☁️  Render Cloud' : '💻 Local Dev'}`);
+  console.log(`PUBLIC URL:  ${displayUrl}`);
+  console.log(`=========================================`);
   console.log(`Waiting for SOS connections...\n`);
+
+  // Auto-sync to Firestore so all mobile clients discover this server
+  syncIpToFirestore(localIp);
 });
