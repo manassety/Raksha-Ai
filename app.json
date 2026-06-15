@@ -1,0 +1,88 @@
+{
+  "expo": {
+    "name": "RakshaAi",
+    "slug": "rakshaai",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#7c3aed"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.rakshaai.emergency",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RakshaAi needs location access for safety features.",
+        "NSCameraUsageDescription": "RakshaAi needs camera access to capture evidence.",
+        "NSMicrophoneUsageDescription": "RakshaAi needs microphone access to record audio.",
+        "NSContactsUsageDescription": "RakshaAi needs access to your contacts for emergency notifications.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bitcode": false
+    },
+    "android": {
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_CONTACTS",
+        "SEND_SMS",
+        "VIBRATE",
+        "SYSTEM_ALERT_WINDOW",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.BLUETOOTH",
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WAKE_LOCK"
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCgXhF8TYXq8R6zwyx1Kg63ciecWHiZKAY"
+        }
+      },
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "monochromeImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#7c3aed"
+      },
+      "splash": {
+        "image": "./assets/splash.png",
+        "resizeMode": "cover",
+        "backgroundColor": "#7c3aed"
+      },
+      "package": "com.rakshaai.emergency",
+      "minSdkVersion": 26,
+      "usesCleartextTraffic": true
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-font",
+      "@config-plugins/react-native-webrtc",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          }
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "8a2be9e6-bf5e-4cfb-ae14-1656dca1eaa4"
+      }
+    }
+  }
+}

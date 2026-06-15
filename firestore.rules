@@ -1,0 +1,124 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // --- Helper Functions ---
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true || 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isMainAdmin == true);
+    }
+
+    function isMainAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isMainAdmin == true;
+    }
+
+    // --- Core Collections ---
+
+    match /users/{userId} {
+      // Allow reading user details for owners and admins
+      allow get: if isAuthenticated() && (isOwner(userId) || isAdmin() || isMainAdmin());
+      // Allow searching and listing users for analytics and verification
+      allow list: if isAuthenticated(); 
+      // Allow owners to update themselves, and main admins to update anyone (roles)
+      allow update: if isAuthenticated() && (isOwner(userId) || isMainAdmin());
+      // Allow only Main Admin to delete users
+      allow delete: if isMainAdmin();
+      // Allow creation during signup
+      allow create: if isAuthenticated();
+    }
+    
+    match /complaints/{complaintId} {
+      // Allow all authenticated users to read complaints to support the Dashboard and Analytics screens
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      // Allow owners to update their own complaints for resolution confirmation, or admins to update everything
+      allow update: if isAuthenticated() && (isAdmin() || (isOwner(resource.data.userId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['userConfirmation', 'confirmationDate', 'status', 'reopenedAt', 'updatedAt'])));
+      allow delete: if isAdmin();
+    }
+
+    match /sos_alerts/{sosId} {
+      // Allow all authenticated users to read SOS alerts for global analytics
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    match /evidence/{evidenceId} {
+      allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+    }
+
+    match /contacts/{contactId} {
+      allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+    
+    match /linked_users/{linkId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated();
+    }
+
+    match /authority_alerts/{alertId} {
+      allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /admin_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+    }
+
+    // --- Legacy / Specific Paths ---
+
+    match /alerts/{alertId} {
+      allow read, create: if isAuthenticated();
+      // Allow users to mark as read, or update the status if they triggered it
+      allow update: if isAuthenticated() && (
+        isAdmin() || 
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) ||
+        (resource.data.triggeredBy == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+      );
+      // Allow admins to delete, or users to delete their own alerts
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.triggeredBy == request.auth.uid);
+    }
+
+    match /emergency_contacts/{contactId} {
+      allow read, write: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /emergency_contacts/{userId}/contacts/{contactId} {
+      allow read, write: if isAuthenticated() && isOwner(userId);
+    }
+
+    match /admin/streaming_config {
+      allow read, write: if true;
+    }
+
+    match /admin/{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /system_config/{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}
