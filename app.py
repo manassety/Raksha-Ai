@@ -1,245 +1,164 @@
-from flask import Flask, request, jsonify
-import cv2
-import numpy as np
-import base64
+import math
+from flask import Flask, request, jsonify, Response, send_from_directory
+from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
+from dotenv import load_dotenv
+load_dotenv() # Load variables from .env if present
+import sys
 import time
+from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+print("Python Version:", sys.version)
+
+HF_MODEL = os.getenv("HF_MODEL", "Qwen/Qwen3-32B")
+AI_PROVIDER = os.getenv("AI_PROVIDER", "huggingface")
+print(f"Provider: {AI_PROVIDER}")
+print(f"Model: {HF_MODEL}")
+
+sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
+try:
+    from services.huggingface_service import HuggingFaceService
+    from raksha_bot.firebase_service import RakshaFirebaseService
+    from raksha_bot.pdf_generator import StudyPlanPDFGenerator
+except ImportError:
+    print("[Warning] Bot modules not found")
+
+import firebase_admin
+from firebase_admin import credentials, firestore, storage
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'raksha_secret_key'
+CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
-# Initialize Haar Cascade for Face Detection
-face_cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-face_cascade = cv2.CascadeClassifier(face_cascade_path) if os.path.exists(face_cascade_path) else None
+# --- BOT & GUARDIAN INITIALIZATION ---
+bot_engine = None
+bot_fb = None
+pdf_gen = None
 
-# Try to initialize YOLOv3-tiny optionally
-yolo_weights = os.path.join(BASE_DIR, "yolov3-tiny.weights")
-yolo_cfg = os.path.join(BASE_DIR, "yolov3-tiny.cfg")
-coco_names = os.path.join(BASE_DIR, "coco.names")
-
-net = None
-classes = []
-output_layers = []
-
-if os.path.exists(yolo_weights) and os.path.exists(yolo_cfg) and os.path.exists(coco_names):
+if 'HuggingFaceService' in globals():
     try:
-        net = cv2.dnn.readNet(yolo_weights, yolo_cfg)
-        with open(coco_names, "r") as f:
-            classes = [line.strip() for line in f.readlines()]
-        layer_names = net.getLayerNames()
-        try:
-            output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
-        except:
-            output_layers = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
-        print("[INFO] YOLOv3-tiny loaded successfully.")
+        if os.environ.get("HF_TOKEN"):
+            bot_engine = HuggingFaceService()
+            bot_fb = RakshaFirebaseService()
+            pdf_gen = StudyPlanPDFGenerator()
+            print("[Bot] Components initialized with HuggingFace successfully")
+        else:
+            print("[Bot] Warning: HF_TOKEN not found, engine deferred")
     except Exception as e:
-        print(f"[ERROR] Failed to load YOLO: {e}")
-        net = None
+        print(f"[Bot] Initialization failed: {e}")
 
-# In-memory storage for evidence count
-evidence_count = {}
-
-# Directory to save evidence images
-evidence_dir = os.path.join(BASE_DIR, "evidence")
-os.makedirs(evidence_dir, exist_ok=True)
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "ok"})
-
-@app.route('/api/auth/register', methods=['POST'])
-def register_face():
-    """
-    Lightweight face registration mock/endpoint using OpenCV Haar Cascades.
-    """
-    data = request.json
-    user_id = data.get('user_id')
-    image_base64 = data.get('image')
-    
-    if not user_id or not image_base64:
-        return jsonify({"error": "Missing user_id or image"}), 400
-        
+# --- FIREBASE INITIALIZATION ---
+if not firebase_admin._apps:
     try:
-        if ',' in image_base64:
-            image_base64 = image_base64.split(',')[1]
-        img_data = base64.b64decode(image_base64)
-        nparr = np.frombuffer(img_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        if face_cascade is not None:
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-            if len(faces) > 0:
-                # Mock encoding since heavy dlib is removed
-                dummy_encoding = [float(x) for x in faces[0]]
+        cred_name = os.environ.get("FIREBASE_SERVICE_ACCOUNT_NAME", "serviceAccountKey.json")
+        if os.path.exists(cred_name):
+            cred = credentials.Certificate(cred_name)
+            firebase_admin.initialize_app(cred, {
+                'storageBucket': os.environ.get("FIREBASE_STORAGE_BUCKET", "tanprix-52683.appspot.com")
+            })
+            print("[Firebase] Admin SDK initialized")
+    except Exception as e:
+        print(f"[Firebase] Critical Init Error: {e}")
+
+db = firestore.client() if firebase_admin._apps else None
+
+# --- AI CHAT ROUTES ---
+
+@app.route("/api/ai/chat", methods=["POST"])
+def ai_chat():
+    try:
+        data = request.json
+        user_message = data.get("message", "")
+        section = data.get("section", "safety")
+        user_id = data.get("user_id", "guest")
+
+        if not user_message:
+            return jsonify({"success": False, "error": "Message is empty"}), 400
+
+        if bot_engine:
+            res = bot_engine.get_chat_response(user_message, section)
+            if res.get("success"):
+                reply = res.get("reply")
+                
+                # Save to Firebase if successful
+                if bot_fb and user_id != "guest":
+                    try:
+                        bot_fb.save_chat_message(user_id, {"sender": "bot", "message": reply, "section": section})
+                    except: pass
+
+                print(f"AI Chat - Provider: huggingface, Model: {HF_MODEL}, Time: {res.get('inference_time')}s")
                 return jsonify({
-                    "success": True, 
-                    "message": "Face registered successfully using lightweight OpenCV.",
-                    "encoding": dummy_encoding
+                    "success": True,
+                    "provider": "huggingface",
+                    "model": HF_MODEL,
+                    "reply": reply
                 })
             else:
-                return jsonify({"success": False, "error": "No face found in image."}), 400
+                print(f"AI Chat Error - Provider: huggingface, Model: {HF_MODEL}, Error: {res.get('error')}")
+                return jsonify({
+                    "success": False,
+                    "provider": "huggingface",
+                    "error": res.get("error", "AI Inference Failure"),
+                    "details": res.get("details", "")
+                }), 503
         else:
-            return jsonify({"success": True, "message": "Face registered (Face detection bypassed)."}), 200
+            return jsonify({
+                "success": False,
+                "error": "AI Engine not initialized"
+            }), 500
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/evidence/analyze', methods=['POST'])
-def analyze_frame():
-    """
-    Analyzes an incoming frame for humans/objects using OpenCV.
-    """
-    data = request.json
-    user_id = data.get('user_id')
-    image_base64 = data.get('image')
-    
-    if not user_id or not image_base64:
-        return jsonify({"error": "Missing user_id or image"}), 400
-        
-    try:
-        if ',' in image_base64:
-            image_base64 = image_base64.split(',')[1]
-        img_data = base64.b64decode(image_base64)
-        nparr = np.frombuffer(img_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        height, width, channels = img.shape
-        human_detected = False
-        
-        # 1. OPTIONAL: YOLO Object Detection if models exist
-        if net is not None:
-            blob = cv2.dnn.blobFromImage(img, 0.00392, (320, 320), (0, 0, 0), True, crop=False)
-            net.setInput(blob)
-            outs = net.forward(output_layers)
-            
-            class_ids = []
-            confidences = []
-            yolo_boxes = []
-            
-            for out in outs:
-                for detection in out:
-                    scores = detection[5:]
-                    class_id = np.argmax(scores)
-                    confidence = scores[class_id]
-                    if confidence > 0.3:
-                        center_x = int(detection[0] * width)
-                        center_y = int(detection[1] * height)
-                        w = int(detection[2] * width)
-                        h = int(detection[3] * height)
-                        x = int(center_x - w / 2)
-                        y = int(center_y - h / 2)
-                        yolo_boxes.append([x, y, w, h])
-                        confidences.append(float(confidence))
-                        class_ids.append(class_id)
-                        
-            indexes = cv2.dnn.NMSBoxes(yolo_boxes, confidences, 0.3, 0.4)
-            for i in range(len(yolo_boxes)):
-                if i in indexes:
-                    x, y, w, h = yolo_boxes[i]
-                    label = str(classes[class_ids[i]])
-                    if label == "person":
-                        human_detected = True
-                        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                        cv2.putText(img, "Human Detected", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        else:
-            # 2. FALLBACK: Haar Cascade Face Detection
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            if face_cascade is not None:
-                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-                for (x, y, w, h) in faces:
-                    human_detected = True
-                    cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2)
-                    cv2.putText(img, "Face Found", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-        evidence_saved = False
-        if human_detected:
-            count = evidence_count.get(user_id, 0)
-            if count < 10:
-                timestamp = int(time.time())
-                cv2.imwrite(os.path.join(evidence_dir, f"human_{user_id}_{timestamp}.jpg"), img)
-                evidence_count[user_id] = count + 1
-                evidence_saved = True
-                
-        _, buffer = cv2.imencode('.jpg', img)
-        annotated_base64 = base64.b64encode(buffer).decode('utf-8')
-                
+        app.logger.exception("AI Chat Logic Failure")
         return jsonify({
-            "success": True, 
-            "unknown_detected": human_detected,
-            "evidence_saved": evidence_saved,
-            "total_evidence_saved": evidence_count.get(user_id, 0),
-            "annotated_frame": annotated_base64
-        })
-            
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+            "success": False,
+            "error": str(e)
+        }), 500
 
-
-import subprocess
-import threading
-
-def run_adb_automation(phone_number, message):
+@app.route("/api/ai/test", methods=["GET"])
+def ai_test_route():
     try:
-        result = subprocess.run(['adb', 'devices'], capture_output=True, text=True)
-        if "device\n" not in result.stdout and "\tdevice" not in result.stdout:
-            print("[ADB] Error: No Android device connected via ADB.")
-            return False, "No device connected via USB Debugging"
+        if bot_engine:
+            res = bot_engine.get_chat_response("Hello, are you active?", "safety")
+            if res.get("success"):
+                return jsonify({
+                    "success": True,
+                    "provider": "huggingface",
+                    "model": HF_MODEL,
+                    "reply": res.get("reply")
+                })
+            else:
+                return jsonify({
+                    "success": False,
+                    "provider": "huggingface",
+                    "error": res.get("error")
+                }), 503
+        
+        return jsonify({"success": False, "error": "Bot engine not ready"}), 500
 
-        print(f"[ADB] Opening SMS app for {phone_number}...")
-        escaped_message = message.replace(' ', '\\%20').replace('&', '\\%26')
-        cmd_open = f'adb shell am start -a android.intent.action.SENDTO -d sms:{phone_number} --es sms_body "{escaped_message}"'
-        subprocess.run(cmd_open, shell=True)
-        
-        time.sleep(2)
-        print("[ADB] Tapping Send button...")
-        subprocess.run('adb shell input tap 950 2150', shell=True)
-        subprocess.run('adb shell input keyevent 22', shell=True) 
-        subprocess.run('adb shell input keyevent 66', shell=True)
-        time.sleep(1.5)
-        
-        print("[ADB] Switching back to Safety App...")
-        subprocess.run('adb shell input keyevent 4', shell=True)
-        time.sleep(0.5)
-        subprocess.run('adb shell input keyevent 4', shell=True)
-        
-        return True, "Success"
     except Exception as e:
-        print(f"[ADB] Automation error: {e}")
-        return False, str(e)
-
-
-@app.route('/api/sos/automate', methods=['POST'])
-def automate_sos():
-    data = request.json or {}
-    phone_number = data.get('phone', '9411596016')
-    message = data.get('message', 'EMERGENCY SOS! I need help!')
-    success, msg = run_adb_automation(phone_number, message)
-    return jsonify({"success": success, "message": msg})
-
-
-@app.route('/api/sos/send_cloud_sms', methods=['POST'])
-def send_cloud_sms():
-    data = request.json or {}
-    numbers = data.get('numbers', [])
-    message = data.get('message', 'EMERGENCY SOS! I need help!')
-    
-    try:
-        time.sleep(1)
-        print(f"\n[CLOUD SMS] EMERGENCY ALERTS SENT SUCCESSFULLY via GATEWAY!")
-        print(f"[CLOUD SMS] Recipients: {', '.join(numbers)}")
-        print(f"[CLOUD SMS] Message: {message}\n")
-        
         return jsonify({
-            "success": True,
-            "message": f"Cloud SMS gateway sent alerts to {len(numbers)} contacts silently in the background."
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route("/api/ai/provider", methods=["GET"])
+def ai_provider_route():
+    return jsonify({
+        "provider": "huggingface",
+        "model": HF_MODEL,
+        "status": "connected" if bot_engine else "disconnected"
+    })
+
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({
+        "message": "Raksha AI Bot backend running",
+        "status": "ok",
+        "provider": "huggingface"
+    })
 
 if __name__ == '__main__':
-    print("RakshaAI Python Lightweight Server running on port 5000")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get("PORT", 10000))
+    socketio.run(app, host='0.0.0.0', port=port, debug=False)
