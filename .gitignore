@@ -16,3 +16,4 @@ src_temp/
 .vscode/
 android/
 ios/
+.env
